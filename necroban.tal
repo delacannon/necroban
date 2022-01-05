@@ -1,0 +1,470 @@
+( Necroban | A Sokoban clone made in uxn -- WIP )
+
+( macros )
+%DEBUG  { ;print-hex JSR2 #0a .Console/write DEO }
+%DEBUG2 { SWP ;print-hex JSR2 ;print-hex JSR2 #0a .Console/write DEO }
+
+%2*  { #10 SFT } %2/  { #01 SFT } %2**  { #10 SFT2 } %2//  { #01 SFT2 }
+%4*  { #20 SFT } %4/  { #02 SFT } %4**  { #20 SFT2 } %4//  { #02 SFT2 }
+%8*  { #30 SFT } %8/  { #03 SFT } %8**  { #30 SFT2 } %8//  { #03 SFT2 }
+
+%TOS  { #00 SWP } 
+%RTN  { JMP2r }   
+
+%GET-SHAPE-SPAN { .shape/type LDZ TOS 8** .shape/rotation LDZ TOS 2** ADD2 ;spans ADD2 LDA2 }
+%GET-SHAPE { .shape/type LDZ TOS 8** .shape/rotation LDZ TOS 2** ADD2 ;shapes ADD2 LDA2 }
+%GET-GRID-INDEX { SX SY ;get-grid-index JSR2 }
+%SX { .Screen/x DEI2 8// }
+%SY { .Screen/y DEI2 8// } 
+
+( devices )
+|00 @System     [ &vector $2 &wst      $1 &rst    $1 &pad   $4 &r      $2 &g      $2 &b    $2 &debug  $1 &halt $1 ]
+|10 @Console    [ &vector $2 &read     $1 &pad    $5 &write $1 &error  $1 ]
+|20 @Screen     [ &vector $2 &width    $2 &height $2 &pad   $2 &x      $2 &y      $2 &addr $2 &pixel  $1 &sprite $1 ]
+|30 @Audio0     [ &vector $2 &position $2 &output $1 &pad   $3 &adsr   $2 &length $2 &addr $2 &volume $1 &pitch $1 ]
+|40 @Audio1     [ &vector $2 &position $2 &output $1 &pad   $3 &adsr   $2 &length $2 &addr $2 &volume $1 &pitch $1 ]
+|80 @Controller [ &vector $2 &button   $1 &key    $1 ]
+
+|0000 
+
+@player
+    &posx $1
+    &posy $1
+    &x $2 
+    &y $2
+    &facing $1
+    &start $1
+
+@x $1 
+@y $1
+@tilex $2 
+@tiley $2
+@timer $1
+@targets $1
+@lastx $1
+@lasty $1
+@arr $1 
+@tile-color $1
+@end-level $1
+@game 
+
+|0100 @reset-game ( -> )
+    ( set screen size )
+    #0140 .Screen/width DEO2 
+    #00f0 .Screen/height DEO2
+    ( set theme )
+    #04cf .System/r DEO2    
+    #1238 .System/g DEO2 
+    #3898 .System/b DEO2
+    ( update )
+    ;on-frame .Screen/vector DEO2 
+    ( set audio channels )
+    #0001 .Audio0/adsr DEO2 ;sin-pcm .Audio0/addr DEO2
+	#0100 .Audio0/length DEO2 #dd .Audio0/volume DEO
+    #0001 .Audio1/adsr DEO2 ;sin-pcm .Audio1/addr DEO2
+	#0050 .Audio1/length DEO2 #dd .Audio1/volume DEO
+    ( start game )
+    ;init-game JSR2
+BRK
+
+@init-game ( ) 
+    #00 .player/start STZ
+RTN 
+
+@reset-level ( ) RTN 
+
+@on-frame ( -> ) 
+    .timer LDZ INC DUP .timer STZ  
+    #07 EQU #01 JCN BRK
+    ( clear screen )
+    #00 ;draw-player JSR2
+    #00 ;draw-grid JSR2
+    ( check input player )
+    ;move-player JSR2
+    ( draw screen ) 
+    #01 ;draw-grid JSR2
+    #02 ;draw-player JSR2
+    ( invert player sprite on facing position )
+    .player/facing LDZ #01 NEQ ,&continue JCN
+    #12 ;draw-player JSR2
+    &continue
+    #00 .timer STZ
+BRK
+
+@move-player ( )
+    ( level is completed? Stop player movement )
+    .end-level LDZ #01 NEQ ,&cont JCN  
+        ( fade colors )
+        .System/r DEI2 #0000 GTH2 ,&fade JCN ,&end JMP
+            &fade .System/r DEI2 NIP #10 SUB TOS .System/r DEO2 &end
+        RTN 
+    &cont
+    ( check button pressed )
+    .Controller/button DEI #07 SFT #01 AND #01 EQU ,&right JCN 
+    .Controller/button DEI #06 SFT #01 AND #01 EQU ,&left JCN
+    .Controller/button DEI #04 SFT #01 AND #01 EQU ,&up JCN
+    .Controller/button DEI #05 SFT #01 AND #01 EQU ,&down JCN
+    
+    RTN 
+
+    &right ;move-right JSR2 RTN 
+    &left ;move-left JSR2 RTN   
+    &up ;move-up JSR2 RTN  
+    &down ;move-down JSR2 RTN 
+
+RTN 
+
+@move-right ( ) 
+    #00 .player/facing STZ
+    #0001 #0000 ;has-skull JSR2 ,&move-skull-right JCN 
+    #0001 #0000 ;has-wall JSR2 ,&no-right JCN 
+    ,&move-right JMP &no-right 
+    #30 .Audio1/pitch DEO
+    RTN
+        
+    &move-skull-right
+    #0002 #0000 ;has-wall JSR2 ,&end-right JCN 
+    #0002 #0000 ;has-skull JSR2 ,&end-right JCN 
+    #0001 #0002 ;push-skull-hor JSR2
+    #40 .Audio0/pitch DEO
+    &move-right
+    .player/x LDZ2 #0001 ADD2 .player/x STZ2 
+    &end-right
+    ;check-targets JSR2
+    
+RTN 
+
+@move-left ( )
+    #01 .player/facing STZ
+    #ffff #0000 ;has-skull JSR2 ,&move-skull-left JCN 
+    #ffff #0000 ;has-wall JSR2 ,&no-left JCN 
+    ,&move-left JMP 
+    &no-left 
+    #30 .Audio1/pitch DEO
+    RTN
+        
+    &move-skull-left
+
+    #fffe #0000 ;has-wall JSR2 ,&end-left JCN 
+    #fffe #0000 ;has-skull JSR2 ,&end-left JCN 
+    #ffff #fffe ;push-skull-hor JSR2
+    #40 .Audio0/pitch DEO
+    &move-left
+    .player/x LDZ2 #0001 SUB2 .player/x STZ2 
+    &end-left
+    ;check-targets JSR2
+RTN
+
+@move-down ( -> )
+    #0000 #0001 ;has-skull JSR2 ,&move-skull-down JCN 
+    #0000 #0001 ;has-wall JSR2 ,&no-down JCN 
+    ,&move-down JMP 
+    &no-down  
+    #30 .Audio1/pitch DEO RTN 
+    
+    &move-skull-down
+    #0000 #0002 ;has-wall JSR2 ,&end-down JCN 
+    #0000 #0002 ;has-skull JSR2 ,&end-down JCN 
+    #0001 #0002 ;push-skull-vert JSR2
+    #40 .Audio0/pitch DEO 
+    &move-down
+    .player/y LDZ2 #0001 ADD2 .player/y STZ2 
+    &end-down
+    
+    ;check-targets JSR2
+
+RTN
+
+@move-up ( -> )
+    #0000 #ffff ;has-skull JSR2 ,&move-skull-up JCN 
+    #0000 #ffff ;has-wall JSR2 ,&no-up JCN 
+    ,&move-up JMP 
+    &no-up 
+    #30 .Audio1/pitch DEO RTN 
+    
+    &move-skull-up
+    #0000 #fffe ;has-wall JSR2 ,&end-up JCN 
+    #0000 #fffe ;has-skull JSR2 ,&end-up JCN 
+    #ffff #fffe ;push-skull-vert JSR2 
+    #40 .Audio0/pitch DEO
+    &move-up
+    .player/y LDZ2 #0001 SUB2 .player/y STZ2 
+    &end-up
+    ;check-targets JSR2
+    
+RTN
+
+@push-skull-hor ( -- x y )
+    STH2 STH2 
+    .player/x LDZ2 STH2r ADD2 .player/y LDZ2 ( .lastx LDZ ) #00 ;set-level-coords JSR2
+    .player/x LDZ2 STH2kr ADD2 .player/y LDZ2 ;get-level-coords JSR2 .lastx STZ
+     .lastx LDZ #c1 EQU ,&paint JCN ,&norm JMP
+    &paint
+        .player/x LDZ2 STH2r ADD2 .player/y LDZ2 #b2 ;set-level-coords JSR2
+        RTN
+    &norm
+        .player/x LDZ2 STH2r ADD2 .player/y LDZ2 #b1 ;set-level-coords JSR2 
+RTN
+
+@push-skull-vert ( -- x y )
+    STH2 STH2 
+    .player/x LDZ2 .player/y LDZ2 STH2r ADD2 ( .lasty LDZ ) #00 ;set-level-coords JSR2
+    .player/x LDZ2 .player/y LDZ2 STH2kr ADD2 ;get-level-coords JSR2 .lasty STZ 
+    .lasty LDZ #c1 EQU ,&paint JCN ,&norm JMP
+    &paint
+       .player/x LDZ2 .player/y LDZ2 STH2r ADD2 #b2 ;set-level-coords JSR2
+        RTN
+    &norm
+       .player/x LDZ2 .player/y LDZ2 STH2r ADD2 #b1 ;set-level-coords JSR2
+RTN
+
+@has-wall ( -- x y ) 
+    STH2 STH2 
+    .player/x LDZ2 STH2r ADD2 .player/y LDZ2 STH2r ADD2 ;get-level-coords JSR2 #a1 EQU
+RTN 
+
+@has-skull ( -- x y ) 
+    STH2 STH2 
+    .player/x LDZ2 STH2r ADD2 .player/y LDZ2 STH2r ADD2 ;get-level-coords JSR2 #b1 EQU
+RTN 
+
+@draw-tile ( -- addr color )
+ STH STHkr .tile-color STZ STH2
+   #02 #00 
+    @cols
+        DUP .y STZ 
+        #02 #00
+        @rows
+           .arr LDZ INC .arr STZ
+           DUP .x STZ 
+           .x LDZ TOS 8** .Screen/x DEO2
+           .y LDZ TOS 8** .Screen/y DEO2
+           .Screen/y DEI2 .tiley LDZ2 #40 SFT2 ADD2 .Screen/y DEO2 
+           .Screen/x DEI2 .tilex LDZ2 #40 SFT2 ADD2 .Screen/x DEO2         
+           STH2kr .arr LDZ #01 SUB TOS 8** ADD2 .Screen/addr DEO2 
+           .tile-color LDZ .Screen/sprite DEO
+        &end
+        INC GTHk ,rows JCN
+        POP2
+     INC GTHk ,cols JCN
+    POP2 POPr POP2r 
+    ( reset tile pos )
+    #00 .arr STZ 
+RTN 
+
+@draw-player ( -- color )
+    STH
+    #02 #00
+    &cols
+        DUP .player/posy STZ 
+        #02 #00
+        &rows
+           .arr LDZ INC .arr STZ
+           DUP .player/posx STZ 
+           .player/posx LDZ TOS 8** .Screen/x DEO2
+           .player/posy LDZ TOS 8** .Screen/y DEO2
+           .Screen/y DEI2 .player/y LDZ2 #40 SFT2 ADD2 .Screen/y DEO2 
+           .Screen/x DEI2 .player/x LDZ2 #40 SFT2 ADD2 .Screen/x DEO2 
+           ( .Screen/x DEI2 ADD2 )
+           ;spr-player 
+           .arr LDZ #01 SUB TOS 8** 
+           .player/facing LDZ TOS #50 SFT2
+           ADD2 ADD2 .Screen/addr DEO2
+           STHkr  .Screen/sprite DEO 
+        &end
+        INC GTHk ,&rows JCN
+        POP2 
+     INC GTHk ,&cols JCN
+    POP2 POPr 
+    ( reset tile pos  )
+    #00 .arr STZ 
+RTN
+
+@draw-walls ( -- col addr )
+    STH 
+    ;get-level-coords JSR2 #a1 EQU ,&draw JCN ,&end JMP
+    &draw
+        .Screen/x DEI2 #04 SFT2 .tilex STZ2
+        .Screen/y DEI2 #04 SFT2 .tiley STZ2
+        ;spr-wall
+        STHkr
+        ;draw-tile JSR2 
+    &end 
+    POPr
+RTN
+
+@draw-skulls ( -- )
+   STH 
+   ;get-level-coords JSR2 #b1 EQU ,&draw JCN ,&end JMP
+    &draw
+        .Screen/x DEI2 #04 SFT2 .tilex STZ2
+        .Screen/y DEI2 #04 SFT2 .tiley STZ2
+        ;skull
+         STHkr #01 ADD
+        ;draw-tile JSR2 
+    &end 
+    POPr
+RTN 
+
+@draw-targets ( -- ) 
+   STH
+   ;get-level-coords JSR2 #c1 EQU ,&draw JCN ,&end JMP
+    &draw
+        .Screen/x DEI2 #04 SFT2 .tilex STZ2
+        .Screen/y DEI2 #04 SFT2 .tiley STZ2
+        ;spr-target
+        STHkr #02 ADD
+        ;draw-tile JSR2 
+    &end 
+    POPr
+RTN 
+
+@set-player ( )
+    ;get-level-coords JSR2 #ff EQU ,&draw JCN ,&end JMP
+    &draw  
+            .Screen/x DEI2 #04 SFT2 .player/x STZ2  
+            .Screen/y DEI2 #04 SFT2 .player/y STZ2  
+            #01 .player/start STZ
+    &end 
+RTN 
+
+@level-completed ( -> )
+    #01 .end-level STZ  
+    #f100 .Audio1/adsr DEO2
+    #0200 .Audio1/length DEO2
+    #40 .Audio1/pitch DEO 
+RTN 
+
+@check-targets
+    #00 .targets STZ
+
+    #10 #00 
+    &cols
+        DUP TOS #40 SFT2 #0000 ADD2 .Screen/y DEO2
+        #10 #00 
+        &rows
+            DUP TOS #40 SFT2 #0000 ADD2 .Screen/x DEO2
+            .Screen/x DEI2 #04 SFT2 
+            .Screen/y DEI2 #04 SFT2 
+            ;get-level-coords JSR2 #c1 NEQ ,&end JCN
+            .targets LDZ #01 ADD .targets STZ
+        &end
+        INC GTHk ,&rows JCN
+        POP2
+     INC GTHk ,&cols JCN
+    POP2
+    
+    .targets LDZ #00 EQU ,&done JCN ,&cont JMP 
+    &done 
+    ( check if all targets are done )
+    ;level-completed JSR2
+    &cont
+RTN 
+
+@draw-grid ( -- color ) 
+    STH
+    #0a #00 
+    &cols
+        DUP TOS #40 SFT2 #0000 ADD2 .Screen/y DEO2
+        #0a #00 
+        &rows
+            DUP TOS #40 SFT2 #0000 ADD2 .Screen/x DEO2
+            .Screen/x DEI2 #04 SFT2 .Screen/y DEI2 #04 SFT2 STHkr ;draw-walls JSR2
+            .Screen/x DEI2 #04 SFT2 .Screen/y DEI2 #04 SFT2 STHkr ;draw-skulls JSR2
+            .Screen/x DEI2 #04 SFT2 .Screen/y DEI2 #04 SFT2 STHkr ;draw-targets JSR2
+            ( init player coords once )
+            .player/start LDZ #00 NEQ ,&end JCN 
+            .Screen/x DEI2 #04 SFT2 .Screen/y DEI2 #04 SFT2 ;set-player JSR2 
+        &end
+        INC GTHk ,&rows JCN
+        POP2
+     INC GTHk ,&cols JCN
+    POP2 POPr
+RTN 
+
+@get-level-coords ( x* y* )
+     #000a MUL2 SWP2 ADD2 ;levels ADD2 LDA
+RTN
+
+
+@set-level-coords ( x* y* val )
+    STH ,&y STR2 ,&x STR2 
+    STHr ,&x LDR2 ,&y LDR2 #000a MUL2 SWP2 ADD2 ;levels ADD2 STA 
+RTN
+    &x $2 &y $2 
+
+( =========== DEBUG  ========= )
+
+@print-hex ( value -- )
+    STHk #04 SFT ,&parse JSR .Console/write DEO
+    STHr #0f AND ,&parse JSR .Console/write DEO
+    JMP2r
+    &parse ( value -- char )
+        DUP #09 GTH ,&above JCN 
+        #30 ADD JMP2r 
+        &above #09 
+        SUB #60 ADD JMP2r
+        #10 #00 SWP 
+RTN
+
+( graphics from https://www.kenney.nl/assets/bit-pack ) 
+( max width and height maps 16x16 sprites and tiles are 16px )
+@levels
+( huffman like encode/decode levels? )
+( A1 wall | C1 target | B1 skull)
+( 00 10 -- store map width and height? and offset bytes )
+    00 00 00 00 a1 a1 a1 00 00 00
+    00 00 00 00 a1 ff a1 00 00 00
+    00 00 00 00 a1 00 a1 a1 a1 a1
+    a1 a1 a1 a1 a1 c1 00 b1 c1 a1
+    a1 00 c1 00 b1 b1 00 a1 a1 a1
+    a1 00 a1 00 a1 00 00 a1 00 00
+    a1 00 00 00 a1 00 00 a1 00 00
+    a1 a1 a1 a1 a1 a1 a1 a1 00 00
+
+@spr-player 
+    7fbf 202f 2629 60f0
+    8ece 4c44 6464 4c8c 
+    fcff 0c6c 6c0c 0000
+    c8c0 d8d8 c0c8 0000
+    8ece 4c44 6464 4c8c 
+    7fbf 202f 2629 60f0
+    c8c0 d8d8 c0c8 0000
+    fcff 0c6c 6c0c 0000
+
+@spr-target 
+    0000 2218 1803 2404
+    0000 4418 18c0 2420
+    0424 0318 1822 0000
+    2024 c018 1844 0000
+
+@spr-wall 
+    007a 797a 0050 5d00
+    00be 00be 3ebe 8012 
+    7777 0750 2656 2600
+    aa82 ba00 f6f6 f600
+
+@skull 
+    0007 1f3f 3f3c 3c1f
+    00c0 f0f8 f8c8 c8f8 
+    010d 0c0f 0700 0000
+    f050 a0f0 e000 0000
+
+( sound )
+@sin-pcm
+	8083 8689 8c8f 9295 989b 9ea1 a4a7 aaad
+	b0b3 b6b9 bbbe c1c3 c6c9 cbce d0d2 d5d7
+	ded9 dee0 e2e4 e6e7 e9eb ecee f0f1 f2f4
+	f5f6 f7f8 f9fa fbfb fcfd fdfe fefe fefe
+	fffe fefe fefe fdfd fcfb fbfa f9f8 f7f6
+	f5f4 f2f1 f0ee eceb e9e7 e6e4 e2e0 deed
+	d9d7 d5d2 d0ce cbc9 c6c3 c1be bbb9 b6b3
+	b0ad aaa7 a4a1 9e9b 9895 928f 8c89 8683
+	807d 7a77 7471 6e6b 6865 625f 5c59 5653
+	504d 4a47 4542 3f3d 3a37 3532 302e 2b29
+	2725 2220 1e1c 1a19 1715 1412 100f 0e0c
+	0b0a 0908 0706 0505 0403 0302 0202 0202
+	0102 0202 0202 0303 0405 0506 0708 090a
+	0b0c 0e0f 1012 1415 1719 1a1c 1e20 2225
+	2729 2b2e 3032 3537 3a3d 3f42 4547 4a4d
+	5053 5659 5c5f 6265 686b 6e71 7477 7a7d
